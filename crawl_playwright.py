@@ -3,195 +3,8 @@ from bs4 import BeautifulSoup
 import re
 import time
 import json
-
-def get_naver_finance_data(stock_code):
-    url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(url)
-        page.wait_for_timeout(2000)
-        html = page.content()
-        soup = BeautifulSoup(html, 'html.parser')
-        data = {}
-
-        # 시가총액
-        def extract_market_cap_from_soup(soup):
-            em = soup.find('em', id='_market_sum')
-            if em:
-                # em 내부 텍스트(개행 포함) 합치기
-                em_text = ''.join(em.stripped_strings)
-                # '330조', '9,078' 등 분리 추출
-                jo = None
-                ok = None
-                m_jo = re.search(r'([\d,]+)조', em_text)
-                if m_jo:
-                    jo = int(m_jo.group(1).replace(',', ''))
-                # '조' 뒤에 억 단위가 붙어있을 수 있음
-                m_ok = re.search(r'조\s*([\d,]+)', em_text)
-                if m_ok:
-                    ok = int(m_ok.group(1).replace(',', ''))
-                if jo is not None and ok is not None:
-                    return f"{jo:,}조 {ok:,}억원"
-                elif jo is not None:
-                    return f"{jo:,}조 0억원"
-                # 억 단위만 있을 때
-                m3 = re.match(r'([\d,]+)', em_text)
-                if m3:
-                    ok = int(m3.group(1).replace(',', ''))
-                    return f"{ok:,}억원"
-                return em_text.strip()
-            # 2. em 태그가 없으면, '시가총액' th/td 직접 탐색
-            for tr in soup.find_all('tr'):
-                th = tr.find('th')
-                td = tr.find('td')
-                if th and td and '시가총액' in th.text:
-                    td_text = td.get_text(separator=' ', strip=True)
-                    m = re.search(r'([\d,]+)조\s*([\d,]+)억원', td_text)
-                    if m:
-                        return f"{int(m.group(1).replace(',', '')):,}조 {int(m.group(2).replace(',', '')):,}억원"
-                    m2 = re.search(r'([\d,]+)조', td_text)
-                    if m2:
-                        return f"{int(m2.group(1).replace(',', '')):,}조 0억원"
-                    m3 = re.search(r'([\d,]+)억원', td_text)
-                    if m3:
-                        return f"{int(m3.group(1).replace(',', '')):,}억원"
-            return '정보 없음'
-        data['시가총액'] = extract_market_cap_from_soup(soup)
-
-        # 시가총액순위
-        rank = None
-        for td in soup.find_all('td'):
-            td_text = ''.join(td.stripped_strings)
-            if '코스피' in td_text and '위' in td_text:
-                em_tag = td.find('em')
-                if em_tag and em_tag.text.strip().isdigit():
-                    rank = f"코스피 {em_tag.text.strip()}위"
-                    break
-        data['시가총액순위'] = rank if rank else '정보 없음'
-
-        # 상장주식수
-        try:
-            for th in soup.find_all('th'):
-                if '상장주식수' in th.text:
-                    td = th.find_next_sibling('td')
-                    if td:
-                        data['상장주식수'] = td.text.strip()
-                        break
-            else:
-                data['상장주식수'] = '정보 없음'
-        except Exception:
-            data['상장주식수'] = '정보 없음'
-
-        # 외국인한도주식수(A), 외국인보유주식수(B), 외국인소진율(B/A)
-        try:
-            found = False
-            for table in soup.find_all('table'):
-                for tr in table.find_all('tr'):
-                    ths = tr.find_all('th')
-                    tds = tr.find_all('td')
-                    for th, td in zip(ths, tds):
-                        if '외국인한도주식수' in th.text:
-                            data['외국인한도주식수(A)'] = td.text.strip()
-                            found = True
-                        if '외국인보유주식수' in th.text:
-                            data['외국인보유주식수(B)'] = td.text.strip()
-                            found = True
-                        if '외국인소진율' in th.text:
-                            data['외국인소진율(B/A)'] = td.text.strip()
-                            found = True
-            if not found:
-                for dl in soup.find_all('dl'):
-                    dt_texts = [dt.text.strip() for dt in dl.find_all('dt')]
-                    if any('외국인한도주식수' in t or '외국인보유주식수' in t or '외국인소진율' in t for t in dt_texts):
-                        dts = dl.find_all('dt')
-                        dds = dl.find_all('dd')
-                        for dt, dd in zip(dts, dds):
-                            if '외국인한도주식수' in dt.text:
-                                data['외국인한도주식수(A)'] = dd.text.strip()
-                            elif '외국인보유주식수' in dt.text:
-                                data['외국인보유주식수(B)'] = dd.text.strip()
-                            elif '외국인소진율' in dt.text:
-                                data['외국인소진율(B/A)'] = dd.text.strip()
-                        found = True
-                        break
-            for key in ['외국인한도주식수(A)', '외국인보유주식수(B)', '외국인소진율(B/A)']:
-                if key not in data:
-                    data[key] = '정보 없음'
-        except Exception:
-            data['외국인한도주식수(A)'] = data['외국인보유주식수(B)'] = data['외국인소진율(B/A)'] = '정보 없음'
-
-        # 투자정보 테이블: 투자의견, 목표주가, 52주최고l최저, PER/EPS/PBR/BPS 분리
-        try:
-            table = soup.find('table', class_='per_table')
-            if table:
-                for tr in table.find_all('tr'):
-                    th = tr.find('th')
-                    td = tr.find('td')
-                    if not th or not td:
-                        continue
-                    th_text = th.text.strip()
-                    td_text = td.text.strip()
-                    # 투자의견 추출 (span.f_up, span.f_down 등 포함)
-                    if '투자의견' in th_text:
-                        span = td.find('span', class_='f_up') or td.find('span', class_='f_down') or td.find('span')
-                        if span:
-                            em = span.find('em')
-                            if em:
-                                score = em.text.strip()
-                                opinion = span.text.replace(em.text, '').strip()
-                                data['투자의견'] = f"{score} {opinion}" if opinion else score
-                        else:
-                            data['투자의견'] = td_text
-                    # 목표주가 추출 (투자의견 | 목표주가)
-                    if '투자의견' in th_text and '목표주가' in th_text:
-                        parts = [p.strip() for p in td_text.split('|')]
-                        data['투자의견'] = parts[0] if len(parts) > 0 else td_text
-                        data['목표주가'] = parts[1] if len(parts) > 1 else ''
-                    # PER/EPS(2025.03) 추출
-                    if th_text.startswith('PER') and re.search(r'\d{4}\.\d{2}', th_text):
-                        per_em = td.find('em', id='_per')
-                        eps_em = td.find('em', id='_eps')
-                        if per_em:
-                            data['PER(2025.03)'] = per_em.text.strip()
-                        else:
-                            per_match = re.search(r'([\d.,]+)배', td_text)
-                            if per_match:
-                                data['PER(2025.03)'] = per_match.group(1)
-                        if eps_em:
-                            data['EPS(2025.03)'] = eps_em.text.strip()
-                        else:
-                            eps_match = re.search(r'([\d,]+)원', td_text)
-                            if eps_match:
-                                data['EPS(2025.03)'] = eps_match.group(1)
-                    # 기존 로직 유지
-                    elif '52주최고' in th_text and '최저' in th_text:
-                        data['52주최고l최저'] = td_text
-                    elif th_text.startswith('추정PER'):
-                        per_match = re.search(r'([\d.,]+)배', td_text)
-                        eps_match = re.search(r'([\d,]+)원', td_text)
-                        if per_match:
-                            data['PER(추정)'] = per_match.group(1)
-                        if eps_match:
-                            data['EPS(추정)'] = eps_match.group(1)
-                    elif th_text.startswith('PBR') and re.search(r'\d{4}\.\d{2}', th_text):
-                        pbr_match = re.search(r'([\d.,]+)배', td_text)
-                        bps_match = re.search(r'([\d,]+)원', td_text)
-                        if pbr_match:
-                            data['PBR(2025.03)'] = pbr_match.group(1)
-                        if bps_match:
-                            data['BPS(2025.03)'] = bps_match.group(1)
-            if '투자의견' not in data:
-                data['투자의견'] = '정보 없음'
-            for key in ['목표주가', '52주최고l최저', 'PER(2025.03)', 'EPS(2025.03)', 'PER(추정)', 'EPS(추정)', 'PBR(2025.03)', 'BPS(2025.03)']:
-                if key not in data:
-                    data[key] = '정보 없음'
-        except Exception:
-            data['투자의견'] = '정보 없음'
-            for key in ['목표주가', '52주최고l최저', 'PER(2025.03)', 'EPS(2025.03)', 'PER(추정)', 'EPS(추정)', 'PBR(2025.03)', 'BPS(2025.03)']:
-                data[key] = '정보 없음'
-        browser.close()
-        return data
+import pandas as pd
+import random
 
 def get_checkbox_items():
     """
@@ -223,14 +36,124 @@ def get_checkbox_items():
         browser.close()
         return checkbox_items
 
-if __name__ == '__main__':
-    stock_code = '005930'
-    result = get_naver_finance_data(stock_code)
-    for k, v in result.items():
-        print(f'{k}: {v}')
+def get_kospi_table_with_checkboxes(checkbox_values):
+    """
+    선택된 체크박스 항목들에 대한 코스피 테이블 데이터를 가져오는 함수
+    Args:
+        checkbox_values (list): 선택할 체크박스 value 값들의 리스트 (최대 7개)
+    Returns:
+        pandas.DataFrame: 선택된 체크박스 항목들의 테이블 데이터
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        
+        # 네이버 금융 상승률 페이지 접속
+        page.goto('https://finance.naver.com/sise/sise_rise.naver')
+        
+        # 체크박스 항목들이 로드될 때까지 대기
+        page.wait_for_selector('input[type="checkbox"]', state="attached")
+        
+        # 기존 체크박스 해제
+        page.evaluate('''() => {
+            const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach(checkbox => checkbox.checked = false);
+        }''')
+        
+        # 선택된 체크박스 체크
+        for value in checkbox_values:
+            page.check(f'input[type="checkbox"][value="{value}"]')
+        
+        # 체크박스 선택 후 잠시 대기 (동적 렌더링 대응)
+        page.wait_for_timeout(1000)
+        
+        # 적용하기 버튼이 보일 때까지 대기 후 클릭
+        page.wait_for_selector('a[href="javascript:fieldSubmit()"]', state="visible")
+        page.click('a[href="javascript:fieldSubmit()"]')
+        
+        # 테이블이 로드될 때까지 대기
+        page.wait_for_selector('table.type_2', state="attached")
+        
+        # HTML 전체를 가져와서 BeautifulSoup으로 파싱
+        html = page.content()
+        browser.close()
+        soup = BeautifulSoup(html, 'html.parser')
+        table = soup.select_one('table.type_2')
+        
+        # 헤더 추출
+        headers = []
+        first_tr = table.find('tr')
+        if first_tr:
+            for th in first_tr.find_all(['th', 'td']):
+                col = th.get_text(strip=True)
+                if col:
+                    headers.append(col)
+        
+        # 데이터 추출
+        rows = []
+        for tr in table.find_all('tr')[1:]:
+            tds = tr.find_all('td')
+            if len(tds) > 1:
+                row = [td.get_text(strip=True) for td in tds]
+                if len(row) >= len(headers):
+                    rows.append(row[:len(headers)])
+        
+        # DataFrame 생성
+        df = pd.DataFrame(rows, columns=headers)
+        return df
 
+def get_all_checkbox_tables():
+    """
+    모든 체크박스를 7개씩 그룹으로 나누어 테이블 데이터를 가져오는 함수
+    Returns:
+        dict: 체크박스 그룹별 테이블 데이터를 담은 딕셔너리
+    """
     # 체크박스 항목들 가져오기
     items = get_checkbox_items()
     
-    # 결과 출력
-    print(json.dumps(items, ensure_ascii=False, indent=2))
+    # fieldIds를 가진 체크박스만 필터링
+    field_checkboxes = [item for item in items if item['name'] == 'fieldIds']
+    
+    # 7개씩 그룹으로 나누기
+    checkbox_groups = []
+    for i in range(0, len(field_checkboxes), 7):
+        group = field_checkboxes[i:i+7]
+        checkbox_groups.append(group)
+    
+    # 각 그룹별로 테이블 데이터 수집
+    all_tables = {}
+    for group in checkbox_groups:
+        group_values = [item['value'] for item in group]
+        group_labels = [item['label'] for item in group]
+        group_key = ', '.join(group_labels)
+        
+        # 테이블 데이터 가져오기
+        table_data = get_kospi_table_with_checkboxes(group_values)
+        all_tables[group_key] = table_data
+    
+    return all_tables
+
+def print_stock_data(stock_name, all_tables):
+    """
+    특정 종목의 전체 데이터를 출력하는 함수
+    Args:
+        stock_name (str): 종목명
+        all_tables (dict): 체크박스 그룹별 테이블 데이터
+    """
+    print(f"\n=== {stock_name} 전체 데이터 ===")
+    for group_name, table_data in all_tables.items():
+        stock_data = table_data[table_data['종목명'] == stock_name]
+        if not stock_data.empty:
+            print(f"\n[{group_name}]")
+            # 기본 정보와 선택된 컬럼만 출력
+            basic_cols = ['종목명', '현재가', '전일비', '등락률']
+            selected_cols = [col for col in stock_data.columns if col not in ['N'] + basic_cols]
+            display_cols = basic_cols + selected_cols
+            print(stock_data[display_cols].to_string(index=False))
+
+if __name__ == '__main__':
+    # 모든 체크박스 그룹의 테이블 데이터 가져오기
+    all_tables = get_all_checkbox_tables()
+    
+    # HS효성 데이터 출력
+    print_stock_data('HS효성', all_tables)
