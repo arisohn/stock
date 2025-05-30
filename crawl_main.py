@@ -154,7 +154,65 @@ def crawl_info(code='005930'):
     df = pd.DataFrame([data])
     return df
 
+def crawl_investor_trend(code='005930'):
+    """
+    네이버 금융 종목 페이지에서 투자자별 매매동향 표를 크롤링하여 DataFrame으로 반환합니다.
+    """
+    url = f'https://finance.naver.com/item/main.naver?code={code}'
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url)
+        page.wait_for_selector('body', state='attached')
+        html = page.content()
+        browser.close()
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # 투자자별 매매동향 표 찾기
+    section = soup.select_one('div.section.cop_analysis')
+    if not section:
+        return pd.DataFrame()
+    table = section.find('table')
+    if not table:
+        return pd.DataFrame()
+
+    # 헤더 추출 (2줄 이상일 수 있음)
+    thead = table.find('thead')
+    headers = []
+    if thead:
+        header_rows = thead.find_all('tr')
+        for tr in header_rows:
+            row = [th.get_text(strip=True) for th in tr.find_all('th')]
+            headers.append(row)
+        # 헤더가 2줄 이상이면 합치기
+        if len(headers) > 1:
+            merged_headers = []
+            for i in range(len(headers[0])):
+                h1 = headers[0][i] if i < len(headers[0]) else ''
+                h2 = headers[1][i] if len(headers) > 1 and i < len(headers[1]) else ''
+                merged_headers.append((h1 + ' ' + h2).strip())
+            headers = merged_headers
+        else:
+            headers = headers[0] if headers else []
+    # 데이터 추출
+    rows = []
+    tbody = table.find('tbody')
+    if tbody:
+        for tr in tbody.find_all('tr'):
+            row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
+            if row:
+                rows.append(row)
+    # 헤더와 데이터 열 개수 맞추기
+    if headers and rows and len(headers) == len(rows[0]):
+        df = pd.DataFrame(rows, columns=headers)
+    else:
+        df = pd.DataFrame(rows)
+    return df
+
 if __name__ == '__main__':
     code = sys.argv[1] if len(sys.argv) > 1 else '005930'
     df = crawl_info(code)
     print(df.T)
+    print('\n[투자자별 매매동향]')
+    investor_df = crawl_investor_trend(code)
+    print(investor_df)
