@@ -6,7 +6,7 @@ import json
 import pandas as pd
 import random
 
-def get_checkbox_items():
+def get_checkbox():
     """
     네이버 금융 상승률 페이지에서 체크박스 항목들을 가져오는 함수
     Returns:
@@ -36,7 +36,7 @@ def get_checkbox_items():
         browser.close()
         return checkbox_items
 
-def get_kospi_table_with_checkboxes(checkbox_values):
+def get_table(checkbox_values):
     """
     선택된 체크박스 항목들에 대한 코스피 테이블 데이터를 가져오는 함수
     Args:
@@ -102,14 +102,14 @@ def get_kospi_table_with_checkboxes(checkbox_values):
         df = pd.DataFrame(rows, columns=headers)
         return df
 
-def get_all_checkbox_tables():
+def get_table_all():
     """
     모든 체크박스를 7개씩 그룹으로 나누어 테이블 데이터를 가져오는 함수
     Returns:
         dict: 체크박스 그룹별 테이블 데이터를 담은 딕셔너리
     """
     # 체크박스 항목들 가져오기
-    items = get_checkbox_items()
+    items = get_checkbox()
     
     # fieldIds를 가진 체크박스만 필터링
     field_checkboxes = [item for item in items if item['name'] == 'fieldIds']
@@ -128,12 +128,12 @@ def get_all_checkbox_tables():
         group_key = ', '.join(group_labels)
         
         # 테이블 데이터 가져오기
-        table_data = get_kospi_table_with_checkboxes(group_values)
+        table_data = get_table(group_values)
         all_tables[group_key] = table_data
     
     return all_tables
 
-def print_stock_data(stock_name, all_tables):
+def grep(stock_name, all_tables):
     """
     특정 종목의 전체 데이터를 출력하는 함수
     Args:
@@ -153,7 +153,7 @@ def print_stock_data(stock_name, all_tables):
 
 if __name__ == '__main__':
     # 모든 체크박스 그룹의 테이블 데이터 가져오기
-    all_tables = get_all_checkbox_tables()
+    all_tables = get_table_all()
     
     # HS효성 데이터 출력
-    print_stock_data('HS효성', all_tables)
+    grep('HS효성', all_tables)
